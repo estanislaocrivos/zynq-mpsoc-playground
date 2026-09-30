@@ -1,0 +1,101 @@
+---
+# CLANG-FORMAT CONFIGURATION FILE
+
+BasedOnStyle: Google
+Language: Cpp
+
+# --- Indentation ---
+UseTab: Never
+IndentWidth: 4
+TabWidth: 4
+ContinuationIndentWidth: 4
+IndentCaseLabels: true
+IndentPPDirectives: None
+IndentWrappedFunctionNames: true
+
+# --- Column & Line Limits ---
+ColumnLimit: 80
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+InsertNewlineAtEOF: true
+
+# --- Alignment ---
+AlignAfterOpenBracket: AlwaysBreak
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+AlignConsecutiveMacros: AcrossEmptyLinesAndComments
+AlignEscapedNewlines: Left
+AlignOperands: true
+AlignTrailingComments: true
+
+# --- Braces ---
+BreakBeforeBraces: Allman
+
+# --- Short Constructs ---
+AllowAllParametersOfDeclarationOnNextLine: true
+AllowShortBlocksOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+
+# --- Breaking ---
+BreakBeforeBinaryOperators: All
+BreakBeforeTernaryOperators: false
+BreakStringLiterals: true
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: false
+BinPackArguments: false
+BinPackParameters: false
+
+# --- Pointer & References ---
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+# --- Spaces ---
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeSquareBrackets: false
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 2
+SpacesInAngles: false
+SpacesInCStyleCastParentheses: false
+SpacesInContainerLiterals: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# --- Includes ---
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^".*"'
+    Priority: 1
+  - Regex: "^<.*>"
+    Priority: 2
+
+# --- Comments ---
+ReflowComments: true
+CommentPragmas: "^ IWYU pragma:"
+
+# --- Penalties ---
+PenaltyBreakAssignment: 16
+PenaltyBreakBeforeFirstCallParameter: 30
+PenaltyBreakComment: 10
+PenaltyBreakFirstLessLess: 0
+PenaltyBreakString: 64
+PenaltyExcessCharacter: 100
+PenaltyReturnTypeOnItsOwnLine: 200
+
+# --- Namespace ---
+NamespaceIndentation: None
+FixNamespaceComments: true
+
+# --- Miscellaneous ---
+Cpp11BracedListStyle: true
+DisableFormat: false
+MacroBlockBegin: ""
+MacroBlockEnd: ""
+UseCRLF: false
+SortUsingDeclarations: false
