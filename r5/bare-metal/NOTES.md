@@ -1,5 +1,7 @@
 # Cortex-R5 (ZynqMP) - Notas
 
+El Cortex-R5 es un procesador ARMv7 de doble núcleo que forma parte del Kria SoM K26. En este archivo se recogen notas sobre los detalles de más bajo nivel en cuanto al arranque del SoC y cada uno de los cores, los bancos de memoria disponibles, entre otros.
+
 ## Regiones de memoria disponibles para el procesador
 
 El core R5 puede acceder a tres tipos de memoria:
@@ -13,7 +15,7 @@ El core R5 puede acceder a tres tipos de memoria:
 Hoy `start.S` no habilita cachés ni MPU, así que no se cachea nada.
 
 - `RPU_0_CFG.VINITHI = 1` por defecto en reset, lo que implica que el core va a arrancar leyendo los vectores altos en la OCM (`0xFFFF_0000`) y no la TCM (`0x0000_0000`).
-- Con `VINITHI = 0` al arrancar, el core lee la dirección `0x0000_0000`, donde espera encontrar una instrucción de salto que lo lleve al código de arranque. Es una instrucción de 32 bits (como todas en ARM).
+- Con `VINITHI = 0` al arrancar, el core lee la dirección `0x0000_0000`, donde espera encontrar una instrucción de salto que lo lleve al código de arranque. Es una instrucción de 32 bits (como el resto de instrucciones ARM en esta arquitectura ARMv7).
 
 ### `VINITHI` vs. `SCTLR.V`
 
@@ -32,11 +34,11 @@ Verificado con XSDB (`rrd cp15 c1`), corriendo este firmware por `remoteproc` tr
 
 Qué implica tenerlos apagados:
 
-1. **No hay datos viejos en caché.** El R5 lee y escribe directo en memoria, y del lado del A53 UIO mapea la `shm` sin caché. En el proyecto FreeRTOS había que marcar la `shm` como no cacheable en el MPU (`Xil_SetMPURegion(..., NORM_SHARED_NCACHE ...)`) justamente porque el BSP prendía las cachés.
-2. **Sin caché no significa sin reordenamiento.** Una escritura puede quedar un rato en un buffer del camino a memoria. Si el R5 escribe un mensaje en `shm` y enseguida dispara la IPI, el A53 podría leer el mensaje incompleto. Regla: poner una barrera (`dsb`) entre "escribir los datos" y "avisar" (antes lo hacía libmetal).
-3. **MPU apagado = sin restricciones del R5, pero no del SoC.** Corriendo en modo System (privilegiado) no hay regiones que bloqueen. Aun así, el ZynqMP tiene protección a nivel sistema, fuera del core: **XMPU** (DDR y OCM) y **XPPU** (periféricos), configurados por el FSBL/PMUFW. Si bloquean un acceso, aparece un Data Abort igual.
+1. **No hay datos viejos en caché.** El R5 lee y escribe directo en memoria, y del lado del A53 UIO mapea la `shm` sin caché.
+2. **Sin caché no significa sin reordenamiento.** Una escritura puede quedar un rato en un buffer del camino a memoria. Si el R5 escribe un mensaje en `shm` y enseguida dispara la IPI, el A53 podría leer el mensaje incompleto. Regla: poner una barrera (`dsb`) entre "escribir los datos" y "avisar".
+3. **MPU apagado = sin restricciones del R5, pero no del SoC.** Corriendo en modo System (privilegiado) no hay regiones que bloqueen. Aun así, el ZynqMP tiene protección a nivel sistema, fuera del core.
 4. **Accesos desalineados.** En memoria de tipo *device* / *strongly-ordered* un acceso desalineado genera fault aunque `SCTLR.A = 0`. Pendiente: verificar qué tipo de memoria usa el R5 para datos con `SCTLR.M = 0` (ARMv7 ARM, B5). Del lado del A53, un `memcpy` sobre memoria UIO sin caché puede dar `SIGBUS` por lo mismo.
-5. **Costo: velocidad.** Sin caché, cada acceso a DDR cruza el interconnect. Para el lab no importa; si un handler necesita baja latencia, se mueve a la TCM.
+5. **Costo: velocidad.** Sin caché, cada acceso a DDR cruza el interconnect.
 
 ## Secuencia de boot del ZynqMP (PMU → CSU → FSBL → ATF → U-Boot → Linux)
 
@@ -58,7 +60,7 @@ El SoC tiene más procesadores que los A53 y los R5:
 4. ATF → U-Boot → Linux (en los A53).
    PMUFW       → queda residente en el PMU, atendiendo pedidos EEMI.
 
-- El FSBL corre desde la **OCM** porque la DDR todavía no está inicializada. La OCM es SRAM on-chip y funciona sin configurar nada (por esto es que se prefiere la parte baja (TCM) para el firmware del R5 y no pisar la OCM, que es para el FSBL).
+El FSBL corre desde la **OCM** porque la DDR todavía no está inicializada. La OCM es SRAM on-chip y funciona sin configurar nada (por esto es que se prefiere la parte baja (TCM) para el firmware del R5, evitando pisar la OCM).
 
 ### Pre-FSBL: del POR a la CSU
 
@@ -110,9 +112,9 @@ sudo xmutil bootfw_update -v
 - Sin firmware corriendo, el RPU queda apagado (`targets` en XSDB muestra `Cortex-R5 #0 (No Power)` y `dow` falla con `The core is powered down`). Dos mecanismos lo apagan:
   1. El PMUFW en su init, si el `BOOT.BIN` no trae app para el R5 (opción de compilación en `xpfw_config.h`).
   2. Linux llama a `PM_INIT_FINALIZE` al final del boot y el PMUFW apaga los nodos que ningún master pidió.
-- `remoteproc` pide los nodos al arrancar un firmware y los libera al pararlo. XSDB no participa de EEMI: no puede prender el core. Si XSDB toma el RPU, después remoteproc falla con `Unable to request node 7` hasta un power-cycle.
+- `remoteproc` pide los nodos al arrancar un firmware y los libera al pararlo. XSDB no puede prender el core. Si XSDB toma el RPU, después remoteproc falla con `Unable to request node 7` hasta un power-cycle.
 - Para inspeccionar con XSDB sin pelear con el PMUFW: arrancar el ELF con `remoteproc` y después, en XSDB, solo `stop` + `rrd` (sin `rst`).
-- Las cachés del R5 (`SCTLR.C`/`I`) y el MPU (`SCTLR.M`) solo los puede cambiar el propio R5: Linux y el device tree no los tocan. Del lado del A53, `no-map` y el `mmap` de `generic-uio` dejan la `shm` sin caché.
+- Las cachés del R5 (`SCTLR.C`/`I`) y el MPU (`SCTLR.M`) solo pueden configurarse desde el propio R5: Linux y el device tree no los tocan. Del lado del A53, `no-map` y el `mmap` de `generic-uio` dejan la `shm` sin caché.
 
 ## De Linux al R5: qué hace `remoteproc`
 
@@ -156,7 +158,7 @@ MEMORY
 }
 ```
 
-```text
+```asm
 .vectors : {
    KEEP (*(.vectors))
    *(.boot)
@@ -171,9 +173,7 @@ El loader (`remoteproc` o `xsdb`) lee el `.elf` y, antes de liberar el core, esc
 
 ```bash
 arm-none-eabi-objdump -h build/firmware-r5.elf
-```
 
-```text
 build/firmware-r5.elf:     file format elf32-littlearm
 
 Sections:
@@ -200,9 +200,7 @@ Idx Name          Size      VMA       LMA       File off  Algn
 
 ```bash
 arm-none-eabi-readelf -l build/firmware-r5.elf
-```
 
-```text
 Elf file type is EXEC (Executable file)
 Entry point 0x20
 There are 2 program headers, starting at offset 52
@@ -316,3 +314,10 @@ Estas instrucciones se encargan, por ejemplo, de poner en cero las variables no 
 
 - Si el registro tiene dirección de memoria (como `0xFF9A_0100`): es del SoC y está en el UG1087.
 - Si el registro se accede con `mrc`/`mcr` (CP15) o es un registro del core (`CPSR`, `r0`–`r15`): es de ARM y está en los manuales de ARM.
+
+
+## Referencias
+
+- [UG1085: Zynq UltraScale+ MPSoC Technical Reference Manual](https://docs.amd.com/v/u/en-US/ug1085-zynq-ultrascale-trm)
+- [UG1087: Zynq UltraScale+ MPSoC Register Reference Guide](https://docs.amd.com/r/en-US/ug1087-zynq-ultrascale-registers/Overview)
+- [ARMv7 Architecture Reference Manual](https://developer.arm.com/documentation/ddi0406/latest)
