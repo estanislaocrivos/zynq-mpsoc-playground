@@ -48,7 +48,6 @@ El SoC tiene más procesadores que los A53 y los R5:
 | CSU                   | MicroBlaze triplicado, unidad de configuración/seguridad | CSU BootROM (fijo en silicio)         |
 | A53_0 (habitual) o R5 | Core de aplicación                                       | **FSBL**, después ATF, U-Boot y Linux |
 
-```text
 1. Encendido   → PMU ROM (en el PMU): inicializa lo mínimo y libera la CSU.
 2. CSU BootROM → lee los pines de boot mode, encuentra BOOT.BIN (SD/QSPI),
                  carga el PMUFW en la RAM del PMU y el FSBL en la OCM,
@@ -58,10 +57,52 @@ El SoC tiene más procesadores que los A53 y los R5:
                  el ATF, U-Boot y, si hay, apps para el R5. Configura VINITHI.
 4. ATF → U-Boot → Linux (en los A53).
    PMUFW       → queda residente en el PMU, atendiendo pedidos EEMI.
-```
 
-- El FSBL corre desde la **OCM** porque la DDR todavía no está inicializada: el controlador y el PHY necesitan configuración y *training*, que hace `psu_init`. La OCM es SRAM on-chip y funciona sin configurar nada. Por eso la OCM no se pisa.
-- El `psu_init.tcl` que se usa desde XSDB hace por JTAG lo mismo que `psu_init` en el FSBL.
+- El FSBL corre desde la **OCM** porque la DDR todavía no está inicializada. La OCM es SRAM on-chip y funciona sin configurar nada (por esto es que se prefiere la parte baja (TCM) para el firmware del R5 y no pisar la OCM, que es para el FSBL).
+
+### Pre-FSBL: del POR a la CSU
+
+Todo lo previo al FSBL es código **fijo en el silicio** (ROM): no se configura ni se actualiza.
+
+1. **POR (Power-On Reset):** al encender, el PMU sale de reset y ejecuta el **PMU ROM**.
+2. **PMU ROM** (tareas pre-boot, UG1085 cap. 11): inicializa el MicroBlaze, limpia LPD/FPD, inicializa el System Monitor, configura y valida PLLs, pone en cero la RAM del PMU, valida la alimentación, repara memorias del FPD si hace falta, corre el self-test de memorias, apaga los IPs deshabilitados y **libera la CSU** (o entra en estado de error). Después entra en *service mode*, esperando pedidos.
+3. **CSU BootROM** (en la CSU): inicializa la OCM, lee el **boot mode** capturado de los pines en el POR (`CRL_APB.BOOT_MODE_USER`, `0xFF5E0200`), busca el `BOOT.BIN`, lo autentica/descifra si el boot es seguro y carga el **FSBL en la OCM** y el **PMUFW en la RAM del PMU**. Libera el core indicado en el boot header (`destination_cpu` en `bootgen.bif`).
+4. Con el PMUFW cargado, el PMU pasa del PMU ROM al **PMUFW**, que queda residente.
+
+| Programa    | Dónde corre | ¿Se puede cambiar?                       | Rol                                             |
+| ----------- | ----------- | ---------------------------------------- | ----------------------------------------------- |
+| PMU ROM     | PMU         | No (silicio)                             | Arranque mínimo, liberar la CSU                 |
+| CSU BootROM | CSU         | No (silicio)                             | Elegir boot mode, cargar y verificar `BOOT.BIN` |
+| PMUFW       | PMU         | Sí (`BOOT.BIN`, compilado por PetaLinux) | Energía, resets y nodos en runtime (EEMI)       |
+| FSBL        | A53_0 o R5  | Sí (`BOOT.BIN`, compilado por PetaLinux) | `psu_init`, cargar el resto de `BOOT.BIN`       |
+
+La **CSU** (*Configuration Security Unit*) es, además de su MicroBlaze, el bloque de seguridad (AES-GCM, RSA, SHA-3, claves en eFuse/BBRAM, anti-tamper) y el **PCAP**, la puerta para programar la PL. Después del boot sigue como servicio de cripto y de carga de bitstreams. No aparece en `targets` de XSDB.
+
+**Por qué hay dos etapas (FSBL y U-Boot):** el FSBL vive en la OCM (256 KB) y solo sabe leer `BOOT.BIN`. U-Boot corre en DDR, entiende sistemas de archivos, red y USB, y tiene consola y scripts; así el kernel se puede cambiar sin tocar `BOOT.BIN`.
+
+### Boot firmware del Kria (QSPI A/B)
+
+- El SOM K26 tiene los pines de boot mode fijos en **QSPI**: `BOOT_MODE_USER[3:0] = 0x2` (QSPI32). Códigos: `0x0` JTAG, `0x1` QSPI24, `0x2` QSPI32, `0x3` SD0, `0x5` SD1, `0x6` eMMC, `0xE` SD1-LS.
+- El arranque está dividido:
+
+| Qué                                                           | Dónde vive                                  | Cómo se actualiza                    |
+| ------------------------------------------------------------- | ------------------------------------------- | ------------------------------------ |
+| `BOOT.BIN` (FSBL, PMUFW, ATF, `system.dtb` de U-Boot, U-Boot) | **QSPI del SOM**, dos copias: **A** y **B** | `xmutil bootfw_update` (ver abajo)   |
+| `boot.scr`, `image.ub` (kernel + DT + ramdisk), rootfs        | **SD**                                      | Copiar archivos / regrabar la imagen |
+
+- Cambios en el device tree o el kernel se ven con solo actualizar la SD. Cambios en FSBL o PMUFW **requieren grabar `BOOT.BIN` en la QSPI**.
+- Imagen activa en esta placa: **B** (actualizada con un `BOOT.BIN` de PetaLinux 2025.1).
+
+Cómo actualizar el boot firmware desde PetaLinux:
+
+```bash
+sudo xmutil bootfw_status               # Imágenes A/B, cuál está activa y cuál se pidió
+sudo xmutil bootfw_update -i ~/BOOT.BIN # Graba la imagen inactiva y la marca para el próximo boot
+sudo reboot
+
+# Solo correr este comando si bootea correctamente. Sino, apagar y prender la placa para que bootee de la otra imagen anterior
+sudo xmutil bootfw_update -v
+```
 
 ### Energía del RPU: PMUFW, remoteproc y XSDB
 
@@ -72,6 +113,35 @@ El SoC tiene más procesadores que los A53 y los R5:
 - `remoteproc` pide los nodos al arrancar un firmware y los libera al pararlo. XSDB no participa de EEMI: no puede prender el core. Si XSDB toma el RPU, después remoteproc falla con `Unable to request node 7` hasta un power-cycle.
 - Para inspeccionar con XSDB sin pelear con el PMUFW: arrancar el ELF con `remoteproc` y después, en XSDB, solo `stop` + `rrd` (sin `rst`).
 - Las cachés del R5 (`SCTLR.C`/`I`) y el MPU (`SCTLR.M`) solo los puede cambiar el propio R5: Linux y el device tree no los tocan. Del lado del A53, `no-map` y el `mmap` de `generic-uio` dejan la `shm` sin caché.
+
+## De Linux al R5: qué hace `remoteproc`
+
+Al ejecutar `echo start > /sys/class/remoteproc/remoteproc0/state` (con el nombre del ELF en `.../firmware` y el archivo en `/lib/firmware/`), en orden:
+
+| #   | Quién                          | Qué hace                                                                                                                                                       | Evidencia                           |
+| --- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| 1   | Linux (driver) → PMUFW         | Pide los nodos RPU_0 (`7`), ATCM (`15`) y BTCM (`16`). El PMUFW los enciende; el core queda **en reset**. La TCM tiene que estar encendida antes de escribirla | `power-domains` en el dtsi          |
+| 2   | Linux → PMUFW                  | Configura el modo del cluster: split o lockstep *(verificar en qué momento exacto)*                                                                            | `cluster-mode = <0>`, `SLSPLIT = 1` |
+| 3   | Linux                          | Mapea las memorias del R5: TCM por su vista global y la DDR reservada (`memory-region`)                                                                        | `ranges` del dtsi (`0xFFE0_0000`)   |
+| 4   | Linux                          | Lee el ELF y copia cada segmento `LOAD`, traduciendo direcciones (`0x0` → `0xFFE0_0000`). Rellena con ceros `MemSiz − FileSiz`                                 | `readelf -l`                        |
+| 5   | Linux                          | Mira el *entry point* del ELF (`0x20`) y elige LOVEC (si fuera ≥ `0xFFFC_0000`, HIVEC)                                                                         | `e_entry`                           |
+| 6   | Linux → PMUFW (`request_wake`) | El PMUFW pone `VINITHI` según lo pedido y **libera el reset** del R5 (`nCPUHALT = 1` y salida de reset en `CRL_APB`) *(verificar el registro exacto)*          | `RPU_0_CFG = 0x00000001`            |
+| 7   | R5                             | Sale de reset (ver abajo) y busca su primera instrucción en `0x0`: `b _boot`                                                                                   | `SCTLR = 0x00E50878`                |
+
+El core se mantiene en reset durante toda la escritura: si corriera antes, ejecutaría código a medio copiar.
+
+Para verificar los pasos marcados: `zynqmp_r5_rproc_prepare` y `zynqmp_r5_rproc_start` en [`drivers/remoteproc/xlnx_r5_remoteproc.c`](https://github.com/torvalds/linux/blob/master/drivers/remoteproc/xlnx_r5_remoteproc.c), y la sección de resets del RPU en el UG1085.
+
+### Estado del core al salir de reset
+
+| Qué                     | Valor                                           | Verificado con                         |
+| ----------------------- | ----------------------------------------------- | -------------------------------------- |
+| Modo                    | Supervisor (SVC)                                | (`_boot` lo cambia a System)           |
+| IRQ / FIQ / abort asín. | Enmascaradas (`CPSR` bits 7, 6 y 8 en 1)        | `CPSR = 0x600001DF` (ya en System)     |
+| Estado de instrucciones | ARM (no Thumb; `SCTLR.TE = 0`)                  | `SCTLR`                                |
+| MPU / cachés            | Apagados (`SCTLR.M`, `C`, `I` en 0)             | `SCTLR = 0x00E50878`                   |
+| Vectores                | Según `VINITHI` (LOVEC en este flujo)           | `SCTLR.V = 0`, `RPU_0_CFG.VINITHI = 0` |
+| `SP` y demás registros  | Indefinidos: `_boot` tiene que cargar cada `SP` | —                                      |
 
 ## Secuencia de boot (ARM R5)
 
@@ -172,20 +242,15 @@ ATCM
 0xC0  __main_veneer      ldr pc, =0x3ED00000  (lo agregó el linker)
 ```
 
-Estas instrucciones se encargan, por ejemplo, de poner en cero las variables no inicializadas (`.bss`) y de cargar los stack pointers de cada modo del procesador. Cada modo (System, IRQ, Undefined, etc.) tiene un sub-stack dentro de la región de stack, donde guarda variables locales y registros salvados. Por ejemplo, el modo IRQ se activa cuando ocurre una interrupción de algún periférico. Al entrar al handler, el core guarda la dirección de retorno en `LR_irq` (un registro *banked*, no el stack), y el handler usa el sub-stack de IRQ para sus variables locales y para salvar registros (incluido `LR_irq`, si llama a otra función).
+Estas instrucciones se encargan, por ejemplo, de poner en cero las variables no inicializadas (`.bss`) y de cargar los stack pointers de cada modo del procesador. Cada modo (System, IRQ, Undefined, etc.) tiene un sub-stack dentro de la región de stack, donde guarda variables locales y registros. Por ejemplo, el modo IRQ se activa cuando ocurre una interrupción de algún periférico. Al entrar a su handler, el core guarda la dirección de retorno en `LR_irq` (un registro *banked*, no el stack), y el handler usa el sub-stack de IRQ para sus variables locales y para salvar registros (incluido `LR_irq`, si llama a otra función).
 
 > **Nota:** a diferencia de lo que sucede en un Cortex-M4 (un STM32, por ejemplo), acá el loader escribe el programa directamente en RAM (TCM y DDR, a partir de `0x3ED00000`; dirección y tamaño reservados en el device tree `system-user.dtsi` de PetaLinux) con los valores finales. En el M4 el programa se graba en la flash no volátil antes de liberar el core; como las variables tienen que poder modificarse, el startup debe copiar los valores iniciales de `.data` de flash a RAM en cada encendido. Acá eso no es necesario, porque el loader ya escribió `.data` en RAM.
 
 ### Detalles del arranque (ARM R5)
 
-- **Alcance de `B`:** el offset es un inmediato de 24 bits con signo, multiplicado por 4 (instrucciones alineadas), así que el rango es ±32 MB alrededor de la instrucción. Desde `0x0` no alcanza `0x3ED0_0000` (~1005 MB), así que para `bl main` el linker insertó automáticamente `__main_veneer` en la ATCM (`ldr pc, =0x3ED00000`, dirección absoluta de 32 bits).
+- **Alcance de la instrucción `b`:** el offset es un inmediato de 24 bits con signo, multiplicado por 4 (instrucciones alineadas), así que el rango es ±32 MB alrededor de la instrucción. Desde `0x0` no alcanza `0x3ED0_0000` (~1005 MB), así que para `bl main` el linker insertó automáticamente `__main_veneer` en la ATCM (`ldr pc, =0x3ED00000`, dirección absoluta de 32 bits).
 - **`--gc-sections` y `ENTRY`:** el linker descarta el código que no es alcanzable desde el símbolo de entrada (`ENTRY(_boot)`) ni está marcado con `KEEP`. Sin un `_boot` definido, nada llegaba a `main` y `.text` quedaba vacía.
 - **Traducción de direcciones en `remoteproc`:** el ELF usa direcciones vistas por el R5. El driver, que corre en el A53, las traduce a la vista global: `0x0` (ATCM) se escribe en `0xFFE0_0000`; la DDR (`0x3ED0_0000`) se ve igual desde ambos. Además, `remoteproc` elige LOVEC o HIVEC según el *entry point* del ELF y se lo pide al PMUFW.
-
-## Información sobre registros del core ARM versus registros del SoC
-
-- Tiene dirección de memoria (como `0xFF9A_0100`): es del SoC y está en el UG1087.
-- Se accede con `mrc`/`mcr` (CP15) o es un registro del core (`CPSR`, `r0`–`r15`): es de ARM y está en los manuales de ARM.
 
 ## Esquema de memoria implementado en este caso
 
@@ -202,44 +267,6 @@ Estas instrucciones se encargan, por ejemplo, de poner en cero las variables no 
 | ↳ shm                   | `0x3EE0_0000` | `0x3EEF_FFFF` | 1 MB    | `.shm`                                                        |
 | ↳ R5 code/data          | `0x3ED0_0000` | `0x3EDF_FFFF` | 1 MB    | `.text`, `.data`, `.bss`, heap, stacks                        |
 | ATCM (local view)       | `0x0000_0000` | `0x0000_FFFF` | 64 KB   | Low vectors, `.vectors` + `.boot`, `.bootdata`                |
-
-Addresses written from memory; verify against UG1085 (System Address Map) and UG1087.
-
-<!-- ```text
-   0xFFFF_FFFF ┌──────────────────────────────┐
-               │ OCM (256 KB)                 │ ← 0xFFFF_0000: vectores altos (VINITHI=1)
-   0xFFFC_0000 ├──────────────────────────────┤
-               │ TCM, vista global            │   R5_0 ATCM en 0xFFE0_0000
-   0xFFE0_0000 │ (para el A53 / JTAG)         │   (misma RAM que 0x0 local)
-               ├──────────────────────────────┤
-               │ Periféricos LPD              │   UART0  0xFF00_0000
-               │                              │   UART1  0xFF01_0000  (Linux)
-               │                              │   TTC0   0xFF11_0000
-               │                              │   SCNTRS 0xFF26_0000
-               │                              │   IPI    0xFF30_0000
-               │                              │   RPU    0xFF9A_0000  (RPU_0_CFG)
-   0xFF00_0000 ├──────────────────────────────┤
-               │ Periféricos FPD / otros      │
-   0xFD00_0000 ├──────────────────────────────┤
-               │ GIC del RPU                  │   0xF900_0000
-   0xF900_0000 ├──────────────────────────────┤
-               │ QSPI, PCIe, CoreSight...     │
-   0xC000_0000 ├──────────────────────────────┤
-               │ PL (lógica programable)      │
-   0x8000_0000 ├──────────────────────────────┤
-               │ DDR baja (hasta 2 GB)        │
-               │  ┌────────────────────────┐  │
-               │  │ 0x3EE0_0000  shm (1MB) │  │ ← .shm
-               │  ├────────────────────────┤  │
-               │  │ 0x3ED0_0000  R5 (1MB)  │  │ ← .text .data .bss stack heap
-               │  └────────────────────────┘  │   (reservado en el device tree de Linux)
-               │                              │
-               ├──────────────────────────────┤
-               │ ATCM (64 KB), vista local    │ ← .vectors (+ .boot), .bootdata
-   0x0000_0000 └──────────────────────────────┘   0x0: vectores bajos (VINITHI=0)
-``` -->
-
-> **Ojo:** el diagrama mezcla dos vistas. En el mapa global, `0x0` es DDR. La ATCM en `0x0` existe solo para el R5: el core resuelve esos accesos por sus puertos TCM privados, sin salir al bus, así que para él los primeros 64 KB de DDR quedan tapados.
 
 ## Secciones de memoria de un programa en C compilado para arquitectura ARM
 
@@ -284,3 +311,8 @@ Addresses written from memory; verify against UG1085 (System Address Map) and UG
 
 - `build/firmware-r5.map` (generado por `-Map`): qué puso el linker en cada lugar, de qué `.o` vino y qué descartó `--gc-sections`.
 - `objdump -h` muestra **secciones** (vista del linker); `readelf -l` muestra **segmentos** (vista del loader).
+
+## Información sobre registros del core ARM versus registros del SoC
+
+- Si el registro tiene dirección de memoria (como `0xFF9A_0100`): es del SoC y está en el UG1087.
+- Si el registro se accede con `mrc`/`mcr` (CP15) o es un registro del core (`CPSR`, `r0`–`r15`): es de ARM y está en los manuales de ARM.

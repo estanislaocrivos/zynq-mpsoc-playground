@@ -1,0 +1,83 @@
+/include/ "system-conf.dtsi"
+
+/ {
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* R5_0 firmware: 1MB @ 0x3ed00000 */
+		ddrboot: ddrboot@3ed00000 {
+			no-map;
+			reg = <0x0 0x3ed00000 0x0 0x100000>;
+		};
+
+		/* A53<->R5_0 shared memory for libmetal: 1MB @ 0x3ee00000 */
+		shm_0: shm@3ee00000 {
+			no-map;
+			reg = <0x0 0x3ee00000 0x0 0x100000>;
+		};
+	};
+
+	rf5ss@ff9a0000 {
+		compatible = "xlnx,zynqmp-r5fss";
+		xlnx,cluster-mode = <0>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges = <0x0 0x0 0x0 0xffe00000 0x0 0x10000>,
+			 <0x0 0x20000 0x0 0xffe20000 0x0 0x10000>;
+
+		r5f@0 {
+			compatible = "xlnx,zynqmp-r5f";
+			reg = <0x0 0x0 0x0 0x10000>,
+			      <0x0 0x20000 0x0 0x10000>;
+			reg-names = "atcm0", "btcm0";
+
+			/* Power domain nodes for ATCM, BTCM and RPU #0 */
+			power-domains = <&zynqmp_firmware 7>,
+					<&zynqmp_firmware 15>,
+					<&zynqmp_firmware 16>;
+			memory-region = <&ddrboot>, <&shm_0>;
+		};
+	};
+
+	/* Shared memory UIO device — mmap'd by A53 libmetal app */
+	shm_uio: shm_uio@3ee00000 {
+		compatible = "generic-uio";
+		reg = <0x0 0x3ee00000 0x0 0x100000>;
+		memory-region = <&shm_0>;
+	};
+
+	/*
+	 * psu_ipi_2 (RPU1 channel) used as a rendezvous point for A53<->R5
+	 * signaling. No kernel driver owns this channel or its SPI 34 interrupt,
+	 * so UIO gets exclusive ownership of the IRQ.
+	 *
+	 * A53 → R5: write RPU0 mask (0x100) to psu_ipi_2 TRIG → fires SPI 33
+	 * R5 → A53: R5 writes RPU1 mask (0x200) to psu_ipi_1 TRIG → fires SPI 34
+	 */
+	ipi_amp: ipi_amp@ff320000 {
+		compatible = "generic-uio";
+		reg = <0x0 0xff320000 0x0 0x1000>;
+		interrupt-parent = <&gic>;
+		interrupts = <0 34 4>;
+	};
+};
+
+/*
+ * TTC0 is the FreeRTOS tick source on R5_0 (same as the custom board). If
+ * Linux probes it, the cadence_ttc driver rewrites the GIC ITARGETS for its
+ * IRQ and the R5 stops receiving the tick (vTaskDelay hangs). Keep it away
+ * from Linux.
+ */
+&ttc0 {
+	status = "disabled";
+};
+
+/*
+ * The fan PWM comes from TTC0, which now belongs to the R5. Without it the
+ * fan runs at full speed (fan_en_b default state).
+ */
+&pwm_fan {
+	status = "disabled";
+};

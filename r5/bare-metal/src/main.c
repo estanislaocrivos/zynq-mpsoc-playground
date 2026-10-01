@@ -62,12 +62,12 @@ void print_hex(uint32_t value)
 }
 
 /* Read a CP15 register: MRC p15, <op1>, <Rt>, <CRn>, <CRm>, <op2> */
-#define READ_CP15(op1, crn, crm, op2)                                          \
-    ({                                                                         \
-        uint32_t _v;                                                           \
-        __asm__ volatile("mrc p15, " #op1 ", %0, " #crn ", " #crm ", " #op2    \
-                         : "=r"(_v));                                          \
-        _v;                                                                    \
+#define READ_CP15(op1, crn, crm, op2)                                       \
+    ({                                                                      \
+        uint32_t _v;                                                        \
+        __asm__ volatile("mrc p15, " #op1 ", %0, " #crn ", " #crm ", " #op2 \
+                         : "=r"(_v));                                       \
+        _v;                                                                 \
     })
 
 static inline uint32_t read_cpsr(void)
@@ -107,7 +107,7 @@ int main(void)
     uart_print_string("\r\n--- R5 register dump ---\r\n");
 
     /* Core state */
-    print_reg("CPSR         = ", read_cpsr());   /* mode [4:0], I/F masks [7:6] */
+    print_reg("CPSR         = ", read_cpsr()); /* mode [4:0], I/F masks [7:6] */
     print_reg("SP (System)  = ", read_sp());
 
     /* CP15 identification (Cortex-R5 TRM, ch. 4) */
@@ -115,8 +115,10 @@ int main(void)
     print_reg("MPIDR        = ", READ_CP15(0, c0, c0, 5));
 
     /* CP15 configuration */
-    print_reg("SCTLR        = ", READ_CP15(0, c1, c0, 0)); /* M[0] C[2] I[12] V[13] */
-    print_reg("CPACR        = ", READ_CP15(0, c1, c0, 2)); /* CP10/CP11 access */
+    print_reg("SCTLR        = ", READ_CP15(0, c1, c0, 0)); /* M[0] C[2] I[12]
+                                                              V[13] */
+    print_reg("CPACR        = ", READ_CP15(0, c1, c0, 2)); /* CP10/CP11 access
+                                                            */
     print_reg("FPEXC        = ", read_fpexc());            /* EN[30] */
     print_reg("BTCM region  = ", READ_CP15(0, c9, c1, 0));
     print_reg("ATCM region  = ", READ_CP15(0, c9, c1, 1));
