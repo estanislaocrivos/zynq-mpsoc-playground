@@ -6,23 +6,21 @@ El Cortex-R5 es un procesador ARMv7 de doble núcleo que forma parte del Kria So
 
 El core R5 puede acceder a tres tipos de memoria:
 
-| Tipo de memoria              | Dirección (vista R5)                   | Tamaño                                                              | Cacheable                               | Descripción                                                                                                                                                                    |
-| ---------------------------- | -------------------------------------- | ------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| TCM (Tightly Coupled Memory) | ATCM `0x0000_0000`, BTCM `0x0002_0000` | 64 KB por banco y por core (128 KB por banco en lockstep)           | No (no lo necesita: acceso en un ciclo) | SRAM conectada por puertos dedicados del core, sin interconnect ni caché: tiempo determinista. El acceso rápido es exclusivo de su core; el A53 y JTAG la ven en `0xFFE0_0000` |
-| OCM (On-Chip Memory)         | `0xFFFC_0000`                          | 256 KB                                                              | Sí, configurable (MPU + `SCTLR.C`/`I`)  | SRAM compartida en el interconnect del LPD (A53, R5, PMU, DMA, PL). La usan el boot ROM, el FSBL y el ATF: no pisarla                                                          |
-| DDR                          | `0x3ED0_0000` / `0x3EE0_0000`          | 1 MB de código/datos + 1 MB de `shm` (reservados en el device tree) | Sí, configurable (MPU + `SCTLR.C`/`I`)  | Memoria de programa y de propósito general; `shm` para compartir datos con el A53                                                                                              |
+| Tipo de memoria              | Dirección (vista R5)                   | Tamaño                                                                                                                                                                                                                                                            | Cacheable                               | Descripción                                                                                                                                                                    |
+| ---------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| TCM (Tightly Coupled Memory) | ATCM `0x0000_0000`, BTCM `0x0002_0000` | 64 KB por banco y por core (128 KB por banco en lockstep)                                                                                                                                                                                                         | No (no lo necesita: acceso en un ciclo) | SRAM conectada por puertos dedicados del core, sin interconnect ni caché: tiempo determinista. El acceso rápido es exclusivo de su core; el A53 y JTAG la ven en `0xFFE0_0000` |
+| OCM (On-Chip Memory)         | `0xFFFC_0000`–`0xFFFF_FFFF`            | 256 KB                                                                                                                                                                                                                                                            | Sí, configurable (MPU + `SCTLR.C`/`I`)  | SRAM compartida en el interconnect del LPD (A53, R5, PMU, DMA, PL). La usan el boot ROM, el FSBL y el ATF: no pisarla                                                          |
+| DDR (baja)                   | `0x0000_0000`–`0x7FFF_FFFF`            | 2 GB visibles para el R5 (el SOM K26 tiene 4 GB: la otra mitad está en la DDR alta, `0x8_0000_0000`, fuera del alcance de 32 bits del R5). En este proyecto: 1 MB de código/datos en `0x3ED0_0000` + 1 MB de `shm` en `0x3EE0_0000`, reservados en el device tree | Sí, configurable (MPU + `SCTLR.C`/`I`)  | Memoria de programa y de propósito general; `shm` para compartir datos con el A53. Misma dirección física para todos los masters; para el R5, los rangos de su TCM la tapan    |
 
-Hoy `start.S` no habilita cachés ni MPU, así que no se cachea nada.
+Hoy `start.S` no habilita cachés ni MPU, así que no se cachea nada. Las direcciones de la tabla son **físicas** (las del bus del SoC), salvo la TCM, que el R5 ve en su vista local. Las direcciones que ve Linux son direcciones virtuales, traducidas por la MMU del A53.
 
-- `RPU_0_CFG.VINITHI = 1` por defecto en reset, lo que implica que el core va a arrancar leyendo los vectores altos en la OCM (`0xFFFF_0000`) y no la TCM (`0x0000_0000`).
-- Con `VINITHI = 0` al arrancar, el core lee la dirección `0x0000_0000`, donde espera encontrar una instrucción de salto que lo lleve al código de arranque. Es una instrucción de 32 bits (como el resto de instrucciones ARM en esta arquitectura ARMv7).
+### Ubicación de los vectores de excepción
 
-### `VINITHI` vs. `SCTLR.V`
+El bit `VINITHI` del registro `RPU0_CFG` (SLCR) determinan dónde busca el core los vectores de excepción, es decir, si el core va a usar la OCM (`VINITHI = 1`, HIVEC) o la ATCM (`VINITHI = 0`, LOVEC) para almacenar los vectores (direcciones) de las excepciones (reset, IRQ, FIQ, etc.). El core copia el valor de `VINITHI` en el bit `V` del registro `SCTLR` del core R5. La diferencia es que `VINITHI` solo se lee en el reset, mientras que `SCTLR.V` se consulta en cada excepción.
 
-- `VINITHI` es un **pin** del core, manejado por el SoC a través de `RPU_0_CFG` (SLCR). El core lo muestrea **solo en el reset** y copia su valor en `SCTLR.V`.
+- `VINITHI` es un **pin** del core, manejado por el SoC a través de `RPU0_CFG` (SLCR). El core lo muestrea **solo en el reset** y copia su valor en `SCTLR.V`.
 - `SCTLR.V` (bit 13 del registro CP15 `SCTLR`) es lo que el core consulta **en cada excepción**. El software puede cambiarlo después del reset.
-- Leer `RPU_0_CFG` dice qué va a tomar el core en el **próximo** reset, no qué está usando ahora. Para eso hay que leer `SCTLR`: `mrc p15, 0, <Rt>, c1, c0, 0`.
-- AMD recomienda quedarse en LOVEC (`VINITHI = 0`, `SCTLR.V = 0`): con HIVEC cada excepción busca su vector en la OCM, con más latencia y jitter.
+- AMD recomienda quedarse en LOVEC (`VINITHI = 0`, `SCTLR.V = 0`) ya que de esta forma los vectores de excepción se almacenan en TCM. Con HIVEC cada excepción busca su vector en la OCM, con más latencia y jitter.
 
 ## Cachés, MPU y comunicación con el A53
 
@@ -127,7 +125,7 @@ Al ejecutar `echo start > /sys/class/remoteproc/remoteproc0/state` (con el nombr
 | 3   | Linux                          | Mapea las memorias del R5: TCM por su vista global y la DDR reservada (`memory-region`)                                                                        | `ranges` del dtsi (`0xFFE0_0000`)   |
 | 4   | Linux                          | Lee el ELF y copia cada segmento `LOAD`, traduciendo direcciones (`0x0` → `0xFFE0_0000`). Rellena con ceros `MemSiz − FileSiz`                                 | `readelf -l`                        |
 | 5   | Linux                          | Mira el *entry point* del ELF (`0x20`) y elige LOVEC (si fuera ≥ `0xFFFC_0000`, HIVEC)                                                                         | `e_entry`                           |
-| 6   | Linux → PMUFW (`request_wake`) | El PMUFW pone `VINITHI` según lo pedido y **libera el reset** del R5 (`nCPUHALT = 1` y salida de reset en `CRL_APB`) *(verificar el registro exacto)*          | `RPU_0_CFG = 0x00000001`            |
+| 6   | Linux → PMUFW (`request_wake`) | El PMUFW pone `VINITHI` según lo pedido y **libera el reset** del R5 (`nCPUHALT = 1` y salida de reset en `CRL_APB`) *(verificar el registro exacto)*          | `RPU0_CFG = 0x00000001`             |
 | 7   | R5                             | Sale de reset (ver abajo) y busca su primera instrucción en `0x0`: `b _boot`                                                                                   | `SCTLR = 0x00E50878`                |
 
 El core se mantiene en reset durante toda la escritura: si corriera antes, ejecutaría código a medio copiar.
@@ -136,14 +134,14 @@ Para verificar los pasos marcados: `zynqmp_r5_rproc_prepare` y `zynqmp_r5_rproc_
 
 ### Estado del core al salir de reset
 
-| Qué                     | Valor                                           | Verificado con                         |
-| ----------------------- | ----------------------------------------------- | -------------------------------------- |
-| Modo                    | Supervisor (SVC)                                | (`_boot` lo cambia a System)           |
-| IRQ / FIQ / abort asín. | Enmascaradas (`CPSR` bits 7, 6 y 8 en 1)        | `CPSR = 0x600001DF` (ya en System)     |
-| Estado de instrucciones | ARM (no Thumb; `SCTLR.TE = 0`)                  | `SCTLR`                                |
-| MPU / cachés            | Apagados (`SCTLR.M`, `C`, `I` en 0)             | `SCTLR = 0x00E50878`                   |
-| Vectores                | Según `VINITHI` (LOVEC en este flujo)           | `SCTLR.V = 0`, `RPU_0_CFG.VINITHI = 0` |
-| `SP` y demás registros  | Indefinidos: `_boot` tiene que cargar cada `SP` | —                                      |
+| Qué                     | Valor                                           | Verificado con                        |
+| ----------------------- | ----------------------------------------------- | ------------------------------------- |
+| Modo                    | Supervisor (SVC)                                | (`_boot` lo cambia a System)          |
+| IRQ / FIQ / abort asín. | Enmascaradas (`CPSR` bits 7, 6 y 8 en 1)        | `CPSR = 0x600001DF` (ya en System)    |
+| Estado de instrucciones | ARM (no Thumb; `SCTLR.TE = 0`)                  | `SCTLR`                               |
+| MPU / cachés            | Apagados (`SCTLR.M`, `C`, `I` en 0)             | `SCTLR = 0x00E50878`                  |
+| Vectores                | Según `VINITHI` (LOVEC en este flujo)           | `SCTLR.V = 0`, `RPU0_CFG.VINITHI = 0` |
+| `SP` y demás registros  | Indefinidos: `_boot` tiene que cargar cada `SP` | —                                     |
 
 ## Secuencia de boot (ARM R5)
 
@@ -261,10 +259,44 @@ Estas instrucciones se encargan, por ejemplo, de poner en cero las variables no 
 | RPU GIC                 | `0xF900_0000` | `0xFCFF_FFFF` | 64 MB   | The GIC only uses the start of this window                    |
 | QSPI, PCIe, CoreSight   | `0xC000_0000` | `0xF8FF_FFFF` | 912 MB  |                                                               |
 | PL                      | `0x8000_0000` | `0xBFFF_FFFF` | 1 GB    |                                                               |
-| DDR low                 | `0x0000_0000` | `0x7FFF_FFFF` | 2 GB    | Hidden below `0x0001_0000` by the ATCM (R5 local view)        |
+| DDR low                 | `0x0000_0000` | `0x7FFF_FFFF` | 2 GB    | R5 local view: ATCM/BTCM windows hide the DDR underneath      |
 | ↳ shm                   | `0x3EE0_0000` | `0x3EEF_FFFF` | 1 MB    | `.shm`                                                        |
 | ↳ R5 code/data          | `0x3ED0_0000` | `0x3EDF_FFFF` | 1 MB    | `.text`, `.data`, `.bss`, heap, stacks                        |
 | ATCM (local view)       | `0x0000_0000` | `0x0000_FFFF` | 64 KB   | Low vectors, `.vectors` + `.boot`, `.bootdata`                |
+
+Las memorias físicas separadas por tipo (cada bloque es una memoria distinta; las direcciones no tienen por qué ser contiguas entre bloques):
+
+```text
+┌─ RPU (dentro del cluster del R5) ──────────────────────────────────────────┐
+│  TCM: SRAM privada de cada core, acceso en 1 ciclo, sin caché              │
+│                                                                            │
+│  ATCM0  64 KB   local R5: 0x0000_0000   global: 0xFFE0_0000                │
+│         uso: .vectors + .boot (_boot), literal pool, __main_veneer         │
+│                                                                            │
+│  BTCM0  64 KB   local R5: 0x0002_0000   global: 0xFFE2_0000                │
+│         uso: (libre; habilitada pero sin secciones asignadas)              │
+│                                                                            │
+│  (R5_1 tiene sus propias ATCM1/BTCM1, globales en 0xFFE9_0000/0xFFEB_0000) │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌─ LPD (on-chip) ────────────────────────────────────────────────────────────┐
+│  OCM  256 KB    0xFFFC_0000 – 0xFFFF_FFFF  (misma dirección para todos)    │
+│       SRAM compartida (A53, R5, PMU, DMA, PL)                              │
+│       uso: FSBL durante el boot, ATF después. Vectores altos (HIVEC) en    │
+│            0xFFFF_0000. Este firmware no la usa: no pisarla.               │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌─ DDR4 externa (chips del SOM K26, 4 GB) ───────────────────────────────────┐
+│  DDR baja  2 GB   0x0_0000_0000 – 0x0_7FFF_FFFF   (visible para el R5)     │
+│    ├─ Linux: kernel, procesos, CMA ("System RAM")                          │
+│    ├─ 0x3ED0_0000  1 MB  firmware R5: .text .rodata .data .bss heap stacks │
+│    │                     (reserved-memory "ddrboot", no-map)               │
+│    └─ 0x3EE0_0000  1 MB  shm A53↔R5                                        │
+│                          (reserved-memory "shm_0", no-map; UIO en el A53)  │
+│                                                                            │
+│  DDR alta  2 GB   0x8_0000_0000 – 0x8_7FFF_FFFF   (solo A53: Linux)        │
+└────────────────────────────────────────────────────────────────────────────┘
+```
 
 ## Secciones de memoria de un programa en C compilado para arquitectura ARM
 
