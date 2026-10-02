@@ -1,3 +1,5 @@
+#include "main.h"
+
 #include <stdint.h>
 
 #define SYSCNT_FREQ_HZ 100000000UL
@@ -61,76 +63,49 @@ void print_hex(uint32_t value)
     uart_print_string(number);
 }
 
-/* Read a CP15 register: MRC p15, <op1>, <Rt>, <CRn>, <CRm>, <op2> */
-#define READ_CP15(op1, crn, crm, op2)                                       \
-    ({                                                                      \
-        uint32_t _v;                                                        \
-        __asm__ volatile("mrc p15, " #op1 ", %0, " #crn ", " #crm ", " #op2 \
-                         : "=r"(_v));                                       \
-        _v;                                                                 \
-    })
-
-static inline uint32_t read_cpsr(void)
+static inline void write_memory(uintptr_t address, uint32_t value)
 {
-    uint32_t v;
-    __asm__ volatile("mrs %0, cpsr" : "=r"(v));
-    return v;
+    *(volatile uint32_t*)address = value;
 }
 
-static inline uint32_t read_sp(void)
+static inline uint32_t read_memory(uintptr_t address)
 {
-    uint32_t v;
-    __asm__ volatile("mov %0, sp" : "=r"(v));
-    return v;
-}
-
-static inline uint32_t read_fpexc(void)
-{
-    uint32_t v;
-    __asm__ volatile("vmrs %0, fpexc" : "=r"(v));
-    return v;
-}
-
-static inline uint32_t read_reg32(uint32_t addr)
-{
-    return *(volatile uint32_t*)addr;
-}
-
-static void print_reg(const char* name, uint32_t value)
-{
-    uart_print_string(name);
-    print_hex(value);
+    return *(volatile uint32_t*)address;
 }
 
 int main(void)
 {
-    uart_print_string("\r\n--- R5 register dump ---\r\n");
+    uart_print_string("Hello, from R5...\r\n");
 
-    /* Core state */
-    print_reg("CPSR         = ", read_cpsr()); /* mode [4:0], I/F masks [7:6] */
-    print_reg("SP (System)  = ", read_sp());
+    /* Clear any IPI left pending by a previous run */
+    write_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET, IPI_A53_BITMASK);
 
-    /* CP15 identification (Cortex-R5 TRM, ch. 4) */
-    print_reg("MIDR         = ", READ_CP15(0, c0, c0, 0));
-    print_reg("MPIDR        = ", READ_CP15(0, c0, c0, 5));
+    /* Write seq. number */
+    write_memory(SHARED_MEM_BASE_ADDR + SHARED_MEM_R2A_SEQ_OFF, 0x1234);
 
-    /* CP15 configuration */
-    print_reg("SCTLR        = ", READ_CP15(0, c1, c0, 0)); /* M[0] C[2] I[12]
-                                                              V[13] */
-    print_reg("CPACR        = ", READ_CP15(0, c1, c0, 2)); /* CP10/CP11 access
-                                                            */
-    print_reg("FPEXC        = ", read_fpexc());            /* EN[30] */
-    print_reg("BTCM region  = ", READ_CP15(0, c9, c1, 0));
-    print_reg("ATCM region  = ", READ_CP15(0, c9, c1, 1));
+    /* The seq. number must reach the shm before the A53 is notified */
+    DO_NOT_REORDER_GUARD();
 
-    /* SoC registers (UG1087) */
-    print_reg("RPU_GLBL_CNTL= ", read_reg32(0xFF9A0000)); /* split/lockstep */
-    print_reg("RPU_0_CFG    = ", read_reg32(0xFF9A0100)); /* VINITHI */
+    /* Trigger interrupt for A53 */
+    write_memory(IPI_SELF_BASEADDR + IPI_TRIG_OFFSET, IPI_A53_BITMASK);
 
-    /* System counter */
-    uint64_t ticks = read_system_clock_counter();
-    print_reg("SYSCNT hi    = ", (uint32_t)(ticks >> 32));
-    print_reg("SYSCNT lo    = ", (uint32_t)ticks);
+    /* OBS: bit set while the A53 has not cleared its ISR */
+    uart_print_string("OBS after trigger: ");
+    print_hex(read_memory(IPI_SELF_BASEADDR + IPI_OBS_OFFSET));
+
+    while (!(read_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET) & IPI_A53_BITMASK))
+    {
+        /* Poll interrupt */
+    }
+
+    /* Clear */
+    write_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET, IPI_A53_BITMASK);
+
+    uart_print_string("Interrupt arrived.\r\n");
+
+    /* A53 echoes the seq. number it processed */
+    uart_print_string("a2r_seq: ");
+    print_hex(read_memory(SHARED_MEM_BASE_ADDR + SHARED_MEM_A2R_SEQ_OFF));
 
     return 0;
 }
