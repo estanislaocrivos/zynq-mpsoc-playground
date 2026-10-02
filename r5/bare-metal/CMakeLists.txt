@@ -9,11 +9,14 @@ set(OUTPUT_BINARY_NAME firmware-r5)
 add_executable(firmware
     src/start.S
     src/main.c
+    inc/xparameters.h
+    inc/main.h
 )
 set_target_properties(firmware PROPERTIES OUTPUT_NAME ${OUTPUT_BINARY_NAME} SUFFIX .elf)
 
 target_include_directories(firmware PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/inc
 )
 
 target_link_options(firmware PRIVATE
