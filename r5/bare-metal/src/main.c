@@ -4,7 +4,8 @@
 
 #include <stdint.h>
 
-#define SYSCNT_FREQ_HZ 100000000UL
+#define SYSCNT_FREQ_HZ          100000000UL
+#define TIME_BETWEEN_QUERIES_MS 1000U
 
 static inline uint64_t read_system_clock_counter(void)
 {
@@ -24,6 +25,18 @@ static inline uint64_t read_system_clock_counter(void)
 static inline uint32_t ticks_to_ns(uint64_t ticks)
 {
     return (uint32_t)((ticks * 1000000000ULL) / SYSCNT_FREQ_HZ);
+}
+
+/* Busy-wait on the system counter, independent of the CPU and fetch speed */
+static void delay_ms(uint32_t ms)
+{
+    uint64_t target = read_system_clock_counter()
+                      + (uint64_t)ms * (SYSCNT_FREQ_HZ / 1000U);
+
+    while ((int64_t)(read_system_clock_counter() - target) < 0)
+    {
+        /* Wait */
+    }
 }
 
 int main(void)
@@ -81,11 +94,7 @@ int main(void)
 
         r2a_seq += 1;
 
-        uint32_t counter = 0;
-        while (counter < 100e6)
-        {
-            counter += 1;
-        }
+        delay_ms(TIME_BETWEEN_QUERIES_MS);
     }
 
     return 0;
