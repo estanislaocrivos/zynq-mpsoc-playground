@@ -9,8 +9,11 @@ set(OUTPUT_BINARY_NAME firmware-r5)
 add_executable(firmware
     src/start.S
     src/main.c
+    src/logging.c
     inc/xparameters.h
     inc/main.h
+    inc/registers.h
+    inc/logging.h
 )
 set_target_properties(firmware PROPERTIES OUTPUT_NAME ${OUTPUT_BINARY_NAME} SUFFIX .elf)
 
