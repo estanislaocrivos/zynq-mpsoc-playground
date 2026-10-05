@@ -33,18 +33,14 @@ int main(void)
     /* Clear any IPI left pending by a previous run */
     write_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET, IPI_A53_BITMASK);
 
-    /* Write seq. number into the request buffer */
-    write_memory(IPI_R2A_REQUEST_ADDR + IPI_REQUEST_SEQ_OFF, 0x1234);
+    /* Write seq. number */
+    write_memory(SHARED_MEM_BASE_ADDR + SHARED_MEM_R2A_SEQ_OFF, 0x1234);
 
-    /* The seq. number must reach the buffer before the A53 is notified */
+    /* The seq. number must reach the shm before the A53 is notified */
     DO_NOT_REORDER_GUARD();
 
     /* Trigger interrupt for A53 */
     write_memory(IPI_SELF_BASEADDR + IPI_TRIG_OFFSET, IPI_A53_BITMASK);
-
-    /* OBS: bit set while the A53 has not cleared its ISR */
-    log_string("OBS after trigger: ");
-    log_value(read_memory(IPI_SELF_BASEADDR + IPI_OBS_OFFSET));
 
     while (!(read_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET) & IPI_A53_BITMASK))
     {
@@ -56,9 +52,9 @@ int main(void)
 
     log_string("Interrupt arrived.\r\n");
 
-    /* A53 echoes the seq. number it processed in the response buffer */
+    /* A53 echoes the seq. number it processed */
     log_string("a2r_seq: ");
-    log_value(read_memory(IPI_A2R_RESPONSE_ADDR + IPI_RESPONSE_SEQ_OFF));
+    log_value(read_memory(SHARED_MEM_BASE_ADDR + SHARED_MEM_A2R_SEQ_OFF));
 
     return 0;
 }

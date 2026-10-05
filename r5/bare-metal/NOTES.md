@@ -38,6 +38,43 @@ Qué implica tenerlos apagados:
 4. **Accesos desalineados.** En memoria de tipo *device* / *strongly-ordered* un acceso desalineado genera fault aunque `SCTLR.A = 0`. Pendiente: verificar qué tipo de memoria usa el R5 para datos con `SCTLR.M = 0` (ARMv7 ARM, B5). Del lado del A53, un `memcpy` sobre memoria UIO sin caché puede dar `SIGBUS` por lo mismo.
 5. **Costo: velocidad.** Sin caché, cada acceso a DDR cruza el interconnect.
 
+## IPI: canales y message buffers
+
+### Qué impone el hardware
+
+- El IPI tiene **11 canales** (0 a 10). El canal es la identidad: el hardware no sabe qué core está detrás, solo qué canal escribe.
+- Cada canal tiene su bloque de registros (`TRIG`, `OBS`, `ISR`, `IMR`, `IER`, `IDR`) y **un bit** en las máscaras de `TRIG`/`OBS`/`ISR` de todos los canales.
+- La RAM de message buffers es una SRAM en el LPD: `0xFF99_0000`–`0xFF99_0FFF` (4 KB). Se organiza en 8 bloques (uno por *índice de buffer*) × 8 slots (uno por índice de destino) × 0x40 (32 B request + 32 B response).
+- El índice de buffer **no es** el número de canal. Los canales 3 a 6 (PMU) comparten el índice 7.
+- El hardware no restringe quién escribe dónde dentro de esa RAM, salvo que la XPPU esté configurada para hacerlo.
+
+| Canal | Agente por defecto | Registros      | Bit           | Índice buffer | Bloque buffers | En este diseño |
+| ----- | ------------------ | -------------- | ------------- | ------------- | -------------- | -------------- |
+| 0     | APU                | `0xFF30_0000`  | `0x00000001`  | 2             | `0xFF99_0400`  | Linux ↔ PMUFW  |
+| 1     | RPU0               | `0xFF31_0000`  | `0x00000100`  | 0             | `0xFF99_0000`  | este R5        |
+| 2     | RPU1               | `0xFF32_0000`  | `0x00000200`  | 1             | `0xFF99_0200`  | app A53 (UIO)  |
+| 3–6   | PMU                | `0xFF33_0000`… | `0x00010000`… | 7             | `0xFF99_0E00`  | PMUFW          |
+| 7     | PL0                | `0xFF34_0000`  | `0x01000000`  | 3             | `0xFF99_0600`  | libre          |
+| 8     | PL1                | `0xFF35_0000`  | `0x02000000`  | 4             | `0xFF99_0800`  | libre          |
+| 9     | PL2                | `0xFF36_0000`  | `0x04000000`  | 5             | `0xFF99_0A00`  | libre          |
+| 10    | PL3                | `0xFF37_0000`  | `0x08000000`  | 6             | `0xFF99_0C00`  | libre          |
+
+"Agente por defecto" es el nombre que usa UG1085. No es una restricción: la app del A53 usa el canal "de RPU1".
+
+### Qué es convención (XIpiPsu, Linux mailbox)
+
+- Request y response de un intercambio viven en el **bloque del que inicia**, en el **slot del que responde**:
+
+  ```
+  request  = 0xFF99_0000 + idx(inicia) * 0x200 + idx(responde) * 0x40
+  response = request + 0x20
+  ```
+
+- El que inicia escribe el request y el que responde escribe el response. Cada buffer tiene un solo escritor.
+- Por eso hay **dos slots por par de canales**: uno en cada bloque. Si los dos inician a la vez, cada request queda en un lugar distinto y no se pisan.
+- El slot propio (bloque *i*, slot *i*) no se usa: nadie se manda un request a sí mismo.
+- En bare-metal nada impide escribir en otro lugar (por ejemplo en `0xFF99_0000`), pero cualquier código que siga la convención (`XIpiPsu_GetBufferAddress()`, el driver de mailbox de Linux) va a buscar el mensaje en otra dirección.
+
 ## Secuencia de boot del ZynqMP (PMU → CSU → FSBL → ATF → U-Boot → Linux)
 
 El SoC tiene más procesadores que los A53 y los R5:
@@ -353,3 +390,4 @@ Las memorias físicas separadas por tipo (cada bloque es una memoria distinta; l
 - [UG1085: Zynq UltraScale+ MPSoC Technical Reference Manual](https://docs.amd.com/v/u/en-US/ug1085-zynq-ultrascale-trm)
 - [UG1087: Zynq UltraScale+ MPSoC Register Reference Guide](https://docs.amd.com/r/en-US/ug1087-zynq-ultrascale-registers/Overview)
 - [ARMv7 Architecture Reference Manual](https://developer.arm.com/documentation/ddi0406/latest)
+- [embeddedsw: driver `ipipsu`](https://github.com/Xilinx/embeddedsw/tree/master/XilinxProcessorIPLib/drivers/ipipsu/src) (`xipipsu_hw.h`, `xipipsu_buf.c`): layout y cálculo de direcciones de los message buffers.

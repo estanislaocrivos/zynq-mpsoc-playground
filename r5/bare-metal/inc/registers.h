@@ -47,43 +47,9 @@
 #define IPI1_9_IPI_BITMASK               0x04000000U /* Ch 9:  PL2 default, free     */
 #define IPI1_10_IPI_BITMASK              0x08000000U /* Ch 10: PL3 default, free     */
 
-/* Channel assignment for this application. To move the A53 app to Ch 7,
- * change IPI_A53_BITMASK to IPI1_7_IPI_BITMASK, IPI_A53_BUF_INDEX to
- * IPI_CH7_BUF_INDEX (and the dtsi node). */
 #define IPI_SELF_BASEADDR                IPI1_BASEADDR
 #define IPI_A53_BITMASK                  IPI1_2_IPI_BITMASK
 #define IPI_SELF_BITMASK                 IPI1_1_IPI_BITMASK
-
-/* ========================================================================== */
-
-/* IPI message buffers (UG1085 ch. 13, xipipsu_hw.h) */
-
-/* 8 blocks (one per buffer index) x 8 slots (one per destination index).
- * Each slot holds a 32-byte request followed by a 32-byte response. Both
- * live in the initiator's block, in the responder's slot. */
-#define IPI_MSG_BUF_BASEADDR             0xFF990000UL
-#define IPI_MSG_BUF_BLOCK_SIZE           0x200U
-#define IPI_MSG_BUF_SLOT_SIZE            0x40U
-#define IPI_MSG_BUF_RESPONSE_OFFSET      0x20U
-
-/* Buffer index per channel (not the channel number) */
-#define IPI_CH1_BUF_INDEX                0U
-#define IPI_CH2_BUF_INDEX                1U
-#define IPI_CH7_BUF_INDEX                3U
-
-#define IPI_SELF_BUF_INDEX               IPI_CH1_BUF_INDEX
-#define IPI_A53_BUF_INDEX                IPI_CH2_BUF_INDEX
-
-/* R5 initiates: request written by R5, response written by A53 */
-#define IPI_R2A_REQUEST_ADDR                                            \
-    (IPI_MSG_BUF_BASEADDR + IPI_SELF_BUF_INDEX * IPI_MSG_BUF_BLOCK_SIZE \
-     + IPI_A53_BUF_INDEX * IPI_MSG_BUF_SLOT_SIZE)
-#define IPI_A2R_RESPONSE_ADDR \
-    (IPI_R2A_REQUEST_ADDR + IPI_MSG_BUF_RESPONSE_OFFSET)
-
-/* Field offsets inside each buffer */
-#define IPI_REQUEST_SEQ_OFF  0x00U
-#define IPI_RESPONSE_SEQ_OFF 0x00U
 
 /* ========================================================================== */
 
