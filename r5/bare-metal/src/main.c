@@ -30,31 +30,63 @@ int main(void)
 {
     log_string("Hello, from R5...\r\n");
 
-    /* Clear any IPI left pending by a previous run */
-    write_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET, IPI_A53_BITMASK);
+    uint32_t r2a_seq = 1;
 
-    /* Write seq. number */
-    write_memory(SHARED_MEM_BASE_ADDR + SHARED_MEM_R2A_SEQ_OFF, 0x1234);
-
-    /* The seq. number must reach the shm before the A53 is notified */
-    DO_NOT_REORDER_GUARD();
-
-    /* Trigger interrupt for A53 */
-    write_memory(IPI_SELF_BASEADDR + IPI_TRIG_OFFSET, IPI_A53_BITMASK);
-
-    while (!(read_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET) & IPI_A53_BITMASK))
+    while (1)
     {
-        /* Poll interrupt */
+        /* Clear any IPI left pending by a previous run */
+        write_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET, IPI_A53_BITMASK);
+
+        /* Write seq. number */
+        write_memory(SHARED_MEM_BASE_ADDR + SHARED_MEM_R2A_SEQ_OFF, r2a_seq);
+
+        /* The seq. number must reach the shm before the A53 is notified */
+        DO_NOT_REORDER_GUARD();
+
+        /* Trigger interrupt for A53 */
+        write_memory(IPI_SELF_BASEADDR + IPI_TRIG_OFFSET, IPI_A53_BITMASK);
+
+        while (!(
+            read_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET) & IPI_A53_BITMASK))
+        {
+            /* Poll interrupt */
+        }
+
+        /* Clear */
+        write_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET, IPI_A53_BITMASK);
+
+        log_string("Interrupt arrived.\r\n");
+
+        /* A53 echoes the seq. number it processed */
+        uint32_t a2r_seq
+            = read_memory(SHARED_MEM_BASE_ADDR + SHARED_MEM_A2R_SEQ_OFF);
+
+        /* Check seq. number */
+        if (a2r_seq != r2a_seq)
+        {
+            log_string("Seq. number mismatch, a2r_seq: ");
+            log_value(a2r_seq);
+        }
+
+        /* NTP 32.32: seconds word first, then fraction */
+        uint32_t ntp_ts_int
+            = read_memory(SHARED_MEM_BASE_ADDR + SHARED_MEM_NTP_TIMESTAMP_OFF);
+        uint32_t ntp_ts_frac = read_memory(
+            SHARED_MEM_BASE_ADDR + SHARED_MEM_NTP_TIMESTAMP_OFF + 4);
+
+        log_string("NTP seconds: ");
+        log_value(ntp_ts_int);
+        log_string("NTP fraction: ");
+        log_value(ntp_ts_frac);
+
+        r2a_seq += 1;
+
+        uint32_t counter = 0;
+        while (counter < 100e6)
+        {
+            counter += 1;
+        }
     }
-
-    /* Clear */
-    write_memory(IPI_SELF_BASEADDR + IPI_ISR_OFFSET, IPI_A53_BITMASK);
-
-    log_string("Interrupt arrived.\r\n");
-
-    /* A53 echoes the seq. number it processed */
-    log_string("a2r_seq: ");
-    log_value(read_memory(SHARED_MEM_BASE_ADDR + SHARED_MEM_A2R_SEQ_OFF));
 
     return 0;
 }
